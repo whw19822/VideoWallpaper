@@ -6,6 +6,7 @@
 
 - 内屏、外屏分别选择视频，使用 SAF 持久化文件访问权限
 - OpenGL 等比填充并居中裁切，保持视频原始比例、不拉伸
+- 仅为当前可见屏幕保留 EGL 与硬件解码器，隐藏后自动释放图形资源
 - 声明 `android:supportsMultipleDisplays="true"`，系统允许时为每块屏幕创建独立的壁纸引擎
 - 同时兼容两种折叠屏实现：
   - 内外屏是两个逻辑 Display：两个引擎可同时播放不同视频
@@ -13,7 +14,7 @@
 - 内外屏识别相反时可一键交换
 - 设置界面会在展开宽度下自动使用双栏布局
 
-## 构建
+## Debug 构建
 
 需要 JDK 17 和 Android SDK 37：
 
@@ -28,6 +29,43 @@ export GRADLE_USER_HOME=/tmp/video-wallpaper-gradle-home
 ```bash
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
+
+## Release 构建
+
+首次构建先生成本机正式签名密钥：
+
+```bash
+./scripts/generate-release-keystore.sh
+```
+
+脚本会创建被 Git 忽略的 `release-keystore.jks` 和
+`keystore.properties`。请安全备份这两个文件；丢失签名密钥后将无法发布
+同一应用的后续更新。
+
+生成已签名 APK 和 Android App Bundle：
+
+```bash
+export ANDROID_HOME=/Users/whw/Library/Android/sdk
+export GRADLE_USER_HOME=/tmp/video-wallpaper-gradle-home
+./gradlew :app:assembleRelease :app:bundleRelease
+```
+
+产物：
+
+- `app/build/outputs/apk/release/app-release.apk`
+- `app/build/outputs/bundle/release/app-release.aab`
+
+构建版本可通过 Gradle 参数覆盖：
+
+```bash
+./gradlew :app:bundleRelease \
+  -PappVersionCode=2 \
+  -PappVersionName=1.1.0
+```
+
+CI 环境也可以不使用 `keystore.properties`，改为提供
+`VIDEO_WALLPAPER_STORE_FILE`、`VIDEO_WALLPAPER_STORE_PASSWORD`、
+`VIDEO_WALLPAPER_KEY_ALIAS` 和 `VIDEO_WALLPAPER_KEY_PASSWORD`。
 
 ## 使用
 

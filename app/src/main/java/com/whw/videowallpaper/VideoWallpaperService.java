@@ -9,23 +9,47 @@ import android.media.AudioAttributes;
 import android.media.MediaMetadataRetriever;
 import android.media.MediaPlayer;
 import android.net.Uri;
+import android.os.Handler;
+import android.os.Looper;
 import android.service.wallpaper.WallpaperService;
 import android.util.Log;
 import android.view.Surface;
 import android.view.SurfaceHolder;
 
 import java.io.IOException;
+import java.util.HashSet;
+import java.util.Set;
 
 public final class VideoWallpaperService extends WallpaperService {
     private static final String TAG = "DualScreenWallpaper";
+    private static final long INVISIBLE_RELEASE_DELAY_MS = 3_000L;
+    private final Set<VideoEngine> activeEngines = new HashSet<>();
 
     @Override
     public Engine onCreateEngine() {
         return new VideoEngine();
     }
 
+    @Override
+    public void onTrimMemory(int level) {
+        super.onTrimMemory(level);
+        for (VideoEngine engine : new HashSet<>(activeEngines)) {
+            engine.releaseInvisibleResourcesNow();
+        }
+    }
+
+    @Override
+    public void onLowMemory() {
+        super.onLowMemory();
+        for (VideoEngine engine : new HashSet<>(activeEngines)) {
+            engine.releaseInvisibleResourcesNow();
+        }
+    }
+
     private final class VideoEngine extends Engine
             implements SharedPreferences.OnSharedPreferenceChangeListener {
+        private final Handler mainHandler = new Handler(Looper.getMainLooper());
+        private final Runnable releaseInvisibleResources = this::releaseResourcesIfInvisible;
         private SurfaceHolder surfaceHolder;
         private MediaPlayer mediaPlayer;
         private WallpaperGlRenderer renderer;
@@ -43,6 +67,7 @@ public final class VideoWallpaperService extends WallpaperService {
         public void onCreate(SurfaceHolder holder) {
             super.onCreate(holder);
             setOffsetNotificationsEnabled(false);
+            activeEngines.add(this);
             VideoPreferences.get(VideoWallpaperService.this)
                     .registerOnSharedPreferenceChangeListener(this);
         }
@@ -66,20 +91,19 @@ public final class VideoWallpaperService extends WallpaperService {
             surfaceReady = true;
             surfaceWidth = width;
             surfaceHeight = height;
-            if (renderer == null) {
-                createRenderer(holder.getSurface(), width, height);
-            } else {
-                renderer.resize(width, height);
-                if (rendererInputSurface != null) {
-                    reloadVideo(true);
-                }
+            if (!visible) {
+                return;
+            }
+            ensureRenderer();
+            if (rendererInputSurface != null) {
+                reloadVideo(true);
             }
         }
 
         @Override
         public void onSurfaceRedrawNeeded(SurfaceHolder holder) {
             super.onSurfaceRedrawNeeded(holder);
-            if (mediaPlayer == null) {
+            if (visible && mediaPlayer == null) {
                 drawPlaceholder(null);
             }
         }
@@ -87,21 +111,64 @@ public final class VideoWallpaperService extends WallpaperService {
         @Override
         public void onVisibilityChanged(boolean isVisible) {
             visible = isVisible;
-            if (mediaPlayer == null && isVisible && surfaceReady) {
-                reloadVideo(false);
+            mainHandler.removeCallbacks(releaseInvisibleResources);
+            if (isVisible) {
+                if (!surfaceReady) {
+                    return;
+                }
+                ensureRenderer();
+                if (mediaPlayer == null) {
+                    reloadVideo(false);
+                } else if (prepared) {
+                    try {
+                        mediaPlayer.start();
+                    } catch (IllegalStateException error) {
+                        Log.w(TAG, "Could not resume wallpaper playback", error);
+                    }
+                }
                 return;
             }
+
+            pausePlayer();
+            mainHandler.postDelayed(releaseInvisibleResources, INVISIBLE_RELEASE_DELAY_MS);
+        }
+
+        private void ensureRenderer() {
+            if (!surfaceReady || surfaceHolder == null || !visible) {
+                return;
+            }
+            if (renderer == null) {
+                createRenderer(surfaceHolder.getSurface(), surfaceWidth, surfaceHeight);
+            } else {
+                renderer.resize(surfaceWidth, surfaceHeight);
+            }
+        }
+
+        private void releaseInvisibleResourcesNow() {
+            if (!visible) {
+                mainHandler.removeCallbacks(releaseInvisibleResources);
+                releaseInvisibleResources.run();
+            }
+        }
+
+        private void releaseResourcesIfInvisible() {
+            if (!visible) {
+                releasePlayer();
+                releaseRenderer();
+                Log.d(TAG, "Released hidden wallpaper resources for " + currentRole);
+            }
+        }
+
+        private void pausePlayer() {
             if (mediaPlayer == null || !prepared) {
                 return;
             }
             try {
-                if (isVisible) {
-                    mediaPlayer.start();
-                } else if (mediaPlayer.isPlaying()) {
+                if (mediaPlayer.isPlaying()) {
                     mediaPlayer.pause();
                 }
             } catch (IllegalStateException error) {
-                Log.w(TAG, "Could not update playback visibility", error);
+                Log.w(TAG, "Could not pause wallpaper playback", error);
             }
         }
 
@@ -109,6 +176,7 @@ public final class VideoWallpaperService extends WallpaperService {
         public void onSurfaceDestroyed(SurfaceHolder holder) {
             surfaceReady = false;
             surfaceHolder = null;
+            mainHandler.removeCallbacks(releaseInvisibleResources);
             releasePlayer();
             releaseRenderer();
             super.onSurfaceDestroyed(holder);
@@ -116,6 +184,8 @@ public final class VideoWallpaperService extends WallpaperService {
 
         @Override
         public void onDestroy() {
+            mainHandler.removeCallbacks(releaseInvisibleResources);
+            activeEngines.remove(this);
             VideoPreferences.get(VideoWallpaperService.this)
                     .unregisterOnSharedPreferenceChangeListener(this);
             releasePlayer();
@@ -125,9 +195,9 @@ public final class VideoWallpaperService extends WallpaperService {
 
         @Override
         public void onSharedPreferenceChanged(SharedPreferences preferences, String key) {
-            if (VideoPreferences.KEY_INNER_URI.equals(key)
+            if (visible && (VideoPreferences.KEY_INNER_URI.equals(key)
                     || VideoPreferences.KEY_OUTER_URI.equals(key)
-                    || VideoPreferences.KEY_SWAP_SCREENS.equals(key)) {
+                    || VideoPreferences.KEY_SWAP_SCREENS.equals(key))) {
                 reloadVideo(true);
             }
         }
@@ -135,6 +205,7 @@ public final class VideoWallpaperService extends WallpaperService {
         private void reloadVideo(boolean force) {
             if (!surfaceReady
                     || surfaceHolder == null
+                    || !visible
                     || renderer == null
                     || rendererInputSurface == null
                     || surfaceWidth <= 0
@@ -240,7 +311,9 @@ public final class VideoWallpaperService extends WallpaperService {
                                 return;
                             }
                             rendererInputSurface = inputSurface;
-                            reloadVideo(true);
+                            if (visible) {
+                                reloadVideo(true);
+                            }
                         }
 
                         @Override
