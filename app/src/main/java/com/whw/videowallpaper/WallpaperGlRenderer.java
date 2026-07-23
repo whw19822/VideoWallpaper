@@ -86,6 +86,7 @@ final class WallpaperGlRenderer {
     private int outputHeight;
     private int videoWidth;
     private int videoHeight;
+    private boolean hasFrame;
     private volatile boolean released;
     private boolean errorReported;
 
@@ -117,7 +118,9 @@ final class WallpaperGlRenderer {
         renderHandler.post(() -> {
             outputWidth = width;
             outputHeight = height;
-            drawCurrentFrame(false);
+            if (hasFrame) {
+                drawCurrentFrame(false);
+            }
         });
     }
 
@@ -128,7 +131,23 @@ final class WallpaperGlRenderer {
         renderHandler.post(() -> {
             videoWidth = width;
             videoHeight = height;
-            drawCurrentFrame(false);
+            if (hasFrame) {
+                drawCurrentFrame(false);
+            }
+        });
+    }
+
+    void resetInputSurface() {
+        if (released) {
+            return;
+        }
+        renderHandler.post(() -> {
+            if (released) {
+                return;
+            }
+            releaseInputSurface();
+            createInputSurface();
+            notifyInputSurfaceReady();
         });
     }
 
@@ -155,11 +174,7 @@ final class WallpaperGlRenderer {
             initializeEgl();
             initializeGlObjects();
             clearSurface();
-            mainHandler.post(() -> {
-                if (!released) {
-                    callback.onInputSurfaceReady(this, inputSurface);
-                }
-            });
+            notifyInputSurfaceReady();
         } catch (RuntimeException error) {
             reportError(error);
         }
@@ -177,15 +192,15 @@ final class WallpaperGlRenderer {
         }
 
         int[] configAttributes = {
-                EGL14.EGL_RED_SIZE, 8,
-                EGL14.EGL_GREEN_SIZE, 8,
-                EGL14.EGL_BLUE_SIZE, 8,
-                EGL14.EGL_ALPHA_SIZE, 8,
+                EGL14.EGL_RED_SIZE, 5,
+                EGL14.EGL_GREEN_SIZE, 6,
+                EGL14.EGL_BLUE_SIZE, 5,
+                EGL14.EGL_ALPHA_SIZE, 0,
                 EGL14.EGL_RENDERABLE_TYPE, EGL14.EGL_OPENGL_ES2_BIT,
                 EGL14.EGL_SURFACE_TYPE, EGL14.EGL_WINDOW_BIT,
                 EGL14.EGL_NONE
         };
-        EGLConfig[] configs = new EGLConfig[1];
+        EGLConfig[] configs = new EGLConfig[32];
         int[] configCount = new int[1];
         if (!EGL14.eglChooseConfig(
                 eglDisplay,
@@ -199,6 +214,7 @@ final class WallpaperGlRenderer {
         ) || configCount[0] == 0) {
             throw new IllegalStateException("Unable to choose EGL config");
         }
+        EGLConfig selectedConfig = selectRgb565Config(configs, configCount[0]);
 
         int[] contextAttributes = {
                 EGL14.EGL_CONTEXT_CLIENT_VERSION, 2,
@@ -206,7 +222,7 @@ final class WallpaperGlRenderer {
         };
         eglContext = EGL14.eglCreateContext(
                 eglDisplay,
-                configs[0],
+                selectedConfig,
                 EGL14.EGL_NO_CONTEXT,
                 contextAttributes,
                 0
@@ -216,13 +232,35 @@ final class WallpaperGlRenderer {
         int[] surfaceAttributes = {EGL14.EGL_NONE};
         eglSurface = EGL14.eglCreateWindowSurface(
                 eglDisplay,
-                configs[0],
+                selectedConfig,
                 outputSurface,
                 surfaceAttributes,
                 0
         );
         checkEgl("eglCreateWindowSurface");
         makeCurrent();
+    }
+
+    private EGLConfig selectRgb565Config(EGLConfig[] configs, int count) {
+        int[] value = new int[1];
+        for (int index = 0; index < count; index++) {
+            EGLConfig config = configs[index];
+            if (configAttribute(config, EGL14.EGL_RED_SIZE, value) == 5
+                    && configAttribute(config, EGL14.EGL_GREEN_SIZE, value) == 6
+                    && configAttribute(config, EGL14.EGL_BLUE_SIZE, value) == 5
+                    && configAttribute(config, EGL14.EGL_ALPHA_SIZE, value) == 0) {
+                return config;
+            }
+        }
+        Log.w(TAG, "Exact RGB565 EGL config unavailable; using closest config");
+        return configs[0];
+    }
+
+    private int configAttribute(EGLConfig config, int attribute, int[] value) {
+        if (!EGL14.eglGetConfigAttrib(eglDisplay, config, attribute, value, 0)) {
+            return -1;
+        }
+        return value[0];
     }
 
     private void initializeGlObjects() {
@@ -250,6 +288,11 @@ final class WallpaperGlRenderer {
         cropScaleLocation = GLES20.glGetUniformLocation(programId, "uCropScale");
         textureSamplerLocation = GLES20.glGetUniformLocation(programId, "uTexture");
 
+        GLES20.glEnable(GLES20.GL_DITHER);
+        createInputSurface();
+    }
+
+    private void createInputSurface() {
         int[] textures = new int[1];
         GLES20.glGenTextures(1, textures, 0);
         textureId = textures[0];
@@ -283,6 +326,15 @@ final class WallpaperGlRenderer {
         inputSurface = new Surface(surfaceTexture);
     }
 
+    private void notifyInputSurfaceReady() {
+        Surface readySurface = inputSurface;
+        mainHandler.post(() -> {
+            if (!released && readySurface == inputSurface) {
+                callback.onInputSurfaceReady(this, readySurface);
+            }
+        });
+    }
+
     private int compileShader(int type, String source) {
         int shader = GLES20.glCreateShader(type);
         GLES20.glShaderSource(shader, source);
@@ -301,10 +353,14 @@ final class WallpaperGlRenderer {
         if (released || surfaceTexture == null || eglSurface == EGL14.EGL_NO_SURFACE) {
             return;
         }
+        if (!updateTexture && !hasFrame) {
+            return;
+        }
         try {
             makeCurrent();
             if (updateTexture) {
                 surfaceTexture.updateTexImage();
+                hasFrame = true;
             }
             surfaceTexture.getTransformMatrix(textureMatrix);
 
@@ -406,19 +462,7 @@ final class WallpaperGlRenderer {
     }
 
     private void releaseGl() {
-        if (inputSurface != null) {
-            inputSurface.release();
-            inputSurface = null;
-        }
-        if (surfaceTexture != null) {
-            surfaceTexture.release();
-            surfaceTexture = null;
-        }
-        if (textureId != 0) {
-            int[] textures = {textureId};
-            GLES20.glDeleteTextures(1, textures, 0);
-            textureId = 0;
-        }
+        releaseInputSurface();
         if (programId != 0) {
             GLES20.glDeleteProgram(programId);
             programId = 0;
@@ -441,5 +485,23 @@ final class WallpaperGlRenderer {
         eglDisplay = EGL14.EGL_NO_DISPLAY;
         eglSurface = EGL14.EGL_NO_SURFACE;
         eglContext = EGL14.EGL_NO_CONTEXT;
+    }
+
+    private void releaseInputSurface() {
+        if (inputSurface != null) {
+            inputSurface.release();
+            inputSurface = null;
+        }
+        if (surfaceTexture != null) {
+            surfaceTexture.setOnFrameAvailableListener(null);
+            surfaceTexture.release();
+            surfaceTexture = null;
+        }
+        if (textureId != 0) {
+            int[] textures = {textureId};
+            GLES20.glDeleteTextures(1, textures, 0);
+            textureId = 0;
+        }
+        hasFrame = false;
     }
 }

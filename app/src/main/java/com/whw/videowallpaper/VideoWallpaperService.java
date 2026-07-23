@@ -5,6 +5,7 @@ import android.content.SharedPreferences;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
+import android.graphics.PixelFormat;
 import android.media.AudioAttributes;
 import android.media.MediaMetadataRetriever;
 import android.media.MediaPlayer;
@@ -49,7 +50,7 @@ public final class VideoWallpaperService extends WallpaperService {
     private final class VideoEngine extends Engine
             implements SharedPreferences.OnSharedPreferenceChangeListener {
         private final Handler mainHandler = new Handler(Looper.getMainLooper());
-        private final Runnable releaseInvisibleResources = this::releaseResourcesIfInvisible;
+        private final Runnable releaseHiddenDecoder = this::releaseDecoderIfInvisible;
         private SurfaceHolder surfaceHolder;
         private MediaPlayer mediaPlayer;
         private WallpaperGlRenderer renderer;
@@ -67,6 +68,7 @@ public final class VideoWallpaperService extends WallpaperService {
         public void onCreate(SurfaceHolder holder) {
             super.onCreate(holder);
             setOffsetNotificationsEnabled(false);
+            holder.setFormat(PixelFormat.RGB_565);
             activeEngines.add(this);
             VideoPreferences.get(VideoWallpaperService.this)
                     .registerOnSharedPreferenceChangeListener(this);
@@ -111,7 +113,7 @@ public final class VideoWallpaperService extends WallpaperService {
         @Override
         public void onVisibilityChanged(boolean isVisible) {
             visible = isVisible;
-            mainHandler.removeCallbacks(releaseInvisibleResources);
+            mainHandler.removeCallbacks(releaseHiddenDecoder);
             if (isVisible) {
                 if (!surfaceReady) {
                     return;
@@ -130,7 +132,7 @@ public final class VideoWallpaperService extends WallpaperService {
             }
 
             pausePlayer();
-            mainHandler.postDelayed(releaseInvisibleResources, INVISIBLE_RELEASE_DELAY_MS);
+            mainHandler.postDelayed(releaseHiddenDecoder, INVISIBLE_RELEASE_DELAY_MS);
         }
 
         private void ensureRenderer() {
@@ -146,16 +148,21 @@ public final class VideoWallpaperService extends WallpaperService {
 
         private void releaseInvisibleResourcesNow() {
             if (!visible) {
-                mainHandler.removeCallbacks(releaseInvisibleResources);
-                releaseInvisibleResources.run();
+                mainHandler.removeCallbacks(releaseHiddenDecoder);
+                releasePlayer();
+                releaseRenderer();
+                Log.d(TAG, "Released all hidden wallpaper resources for " + currentRole);
             }
         }
 
-        private void releaseResourcesIfInvisible() {
+        private void releaseDecoderIfInvisible() {
             if (!visible) {
                 releasePlayer();
-                releaseRenderer();
-                Log.d(TAG, "Released hidden wallpaper resources for " + currentRole);
+                if (renderer != null) {
+                    rendererInputSurface = null;
+                    renderer.resetInputSurface();
+                }
+                Log.d(TAG, "Released hidden video decoder for " + currentRole);
             }
         }
 
@@ -176,7 +183,7 @@ public final class VideoWallpaperService extends WallpaperService {
         public void onSurfaceDestroyed(SurfaceHolder holder) {
             surfaceReady = false;
             surfaceHolder = null;
-            mainHandler.removeCallbacks(releaseInvisibleResources);
+            mainHandler.removeCallbacks(releaseHiddenDecoder);
             releasePlayer();
             releaseRenderer();
             super.onSurfaceDestroyed(holder);
@@ -184,7 +191,7 @@ public final class VideoWallpaperService extends WallpaperService {
 
         @Override
         public void onDestroy() {
-            mainHandler.removeCallbacks(releaseInvisibleResources);
+            mainHandler.removeCallbacks(releaseHiddenDecoder);
             activeEngines.remove(this);
             VideoPreferences.get(VideoWallpaperService.this)
                     .unregisterOnSharedPreferenceChangeListener(this);
