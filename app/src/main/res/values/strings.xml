@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">双屏动态壁纸</string>
+    <string name="wallpaper_name">双屏视频壁纸</string>
+    <string name="wallpaper_description">为折叠屏内屏和外屏分别播放视频，支持系统多显示屏壁纸。</string>
+    <string name="display_status">当前识别：%1$s  ·  %2$d × %3$d\n%4$s</string>
+    <string name="display_count_multiple">系统当前暴露 %1$d 个亮屏，可分别运行壁纸引擎。</string>
+    <string name="display_count_single">系统当前暴露 1 个亮屏，折叠状态变化时会自动重新识别。</string>
+</resources>
