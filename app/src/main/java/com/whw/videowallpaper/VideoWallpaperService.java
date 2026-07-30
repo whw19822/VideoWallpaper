@@ -2,6 +2,7 @@ package com.whw.videowallpaper;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.content.res.Configuration;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
@@ -32,6 +33,14 @@ public final class VideoWallpaperService extends WallpaperService {
     }
 
     @Override
+    public void onConfigurationChanged(Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        for (VideoEngine engine : new HashSet<>(activeEngines)) {
+            engine.onSystemModeChanged();
+        }
+    }
+
+    @Override
     public void onTrimMemory(int level) {
         super.onTrimMemory(level);
         for (VideoEngine engine : new HashSet<>(activeEngines)) {
@@ -58,10 +67,12 @@ public final class VideoWallpaperService extends WallpaperService {
         private boolean surfaceReady;
         private boolean visible;
         private boolean prepared;
+        private boolean reloadWhenVisible;
         private int surfaceWidth;
         private int surfaceHeight;
         private int generation;
         private ScreenRole currentRole = ScreenRole.INNER;
+        private WallpaperMode currentMode = WallpaperMode.LIGHT;
         private String loadedUri = "";
 
         @Override
@@ -94,6 +105,7 @@ public final class VideoWallpaperService extends WallpaperService {
             surfaceWidth = width;
             surfaceHeight = height;
             if (!visible) {
+                reloadWhenVisible = true;
                 return;
             }
             ensureRenderer();
@@ -119,9 +131,11 @@ public final class VideoWallpaperService extends WallpaperService {
                     return;
                 }
                 ensureRenderer();
-                if (mediaPlayer == null) {
+                if (mediaPlayer == null || reloadWhenVisible) {
+                    reloadWhenVisible = false;
                     reloadVideo(false);
-                } else if (prepared) {
+                }
+                if (mediaPlayer != null && prepared) {
                     try {
                         mediaPlayer.start();
                     } catch (IllegalStateException error) {
@@ -179,6 +193,14 @@ public final class VideoWallpaperService extends WallpaperService {
             }
         }
 
+        private void onSystemModeChanged() {
+            if (visible) {
+                reloadVideo(false);
+            } else {
+                reloadWhenVisible = true;
+            }
+        }
+
         @Override
         public void onSurfaceDestroyed(SurfaceHolder holder) {
             surfaceReady = false;
@@ -202,10 +224,14 @@ public final class VideoWallpaperService extends WallpaperService {
 
         @Override
         public void onSharedPreferenceChanged(SharedPreferences preferences, String key) {
-            if (visible && (VideoPreferences.KEY_INNER_URI.equals(key)
-                    || VideoPreferences.KEY_OUTER_URI.equals(key)
-                    || VideoPreferences.KEY_SWAP_SCREENS.equals(key))) {
+            if (!VideoPreferences.isVideoUriKey(key)
+                    && !VideoPreferences.KEY_SWAP_SCREENS.equals(key)) {
+                return;
+            }
+            if (visible) {
                 reloadVideo(true);
+            } else {
+                reloadWhenVisible = true;
             }
         }
 
@@ -224,7 +250,10 @@ public final class VideoWallpaperService extends WallpaperService {
             WallpaperGlRenderer currentRenderer = renderer;
             ScreenRole nextRole =
                     ScreenRoleDetector.detect(displayContext, surfaceWidth, surfaceHeight);
-            String nextUri = VideoPreferences.getUri(displayContext, nextRole);
+            WallpaperMode nextMode = WallpaperMode.from(displayContext);
+            String nextUri =
+                    VideoPreferences.getEffectiveUri(displayContext, nextRole, nextMode);
+            currentMode = nextMode;
             if (!force
                     && nextRole == currentRole
                     && nextUri.equals(loadedUri)
@@ -233,8 +262,8 @@ public final class VideoWallpaperService extends WallpaperService {
             }
 
             currentRole = nextRole;
-            loadedUri = nextUri;
             releasePlayer();
+            loadedUri = nextUri;
 
             if (nextUri.isEmpty()) {
                 drawPlaceholder(null);
@@ -385,7 +414,11 @@ public final class VideoWallpaperService extends WallpaperService {
                 String message,
                 Throwable error
         ) {
-            Log.e(TAG, message + " for " + currentRole, error);
+            Log.e(
+                    TAG,
+                    message + " for " + currentRole + " in " + currentMode + " mode",
+                    error
+            );
             if (failedPlayer == mediaPlayer) {
                 mediaPlayer = null;
                 prepared = false;
@@ -457,7 +490,12 @@ public final class VideoWallpaperService extends WallpaperService {
 
                 float centerX = canvas.getWidth() / 2f;
                 float centerY = canvas.getHeight() / 2f;
-                canvas.drawText(currentRole.displayName() + "视频壁纸", centerX, centerY, titlePaint);
+                canvas.drawText(
+                        currentRole.displayName() + currentMode.displayName() + "视频壁纸",
+                        centerX,
+                        centerY,
+                        titlePaint
+                );
                 canvas.drawText(
                         errorMessage == null ? "请在应用中选择视频" : errorMessage,
                         centerX,

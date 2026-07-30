@@ -34,14 +34,16 @@ import android.widget.Toast;
 
 @SuppressWarnings("deprecation")
 public final class MainActivity extends Activity {
-    private static final int REQUEST_INNER_VIDEO = 100;
-    private static final int REQUEST_OUTER_VIDEO = 101;
+    private static final int REQUEST_VIDEO_BASE = 100;
+    private static final int REQUEST_VIDEO_COUNT =
+            ScreenRole.values().length * WallpaperMode.values().length;
 
-    private TextView innerVideoStatus;
-    private TextView outerVideoStatus;
-    private Button clearInnerButton;
-    private Button clearOuterButton;
+    private final TextView[][] videoStatuses =
+            new TextView[ScreenRole.values().length][WallpaperMode.values().length];
+    private final Button[][] clearVideoButtons =
+            new Button[ScreenRole.values().length][WallpaperMode.values().length];
     private TextView wallpaperStatus;
+    private TextView systemModeStatus;
     private TextView displayStatus;
     private Switch swapSwitch;
 
@@ -50,10 +52,11 @@ public final class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         getWindow().setStatusBarColor(color(R.color.app_background));
         getWindow().setNavigationBarColor(color(R.color.app_background));
-        getWindow().getDecorView().setSystemUiVisibility(
-                View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
+        boolean lightMode = WallpaperMode.from(this) == WallpaperMode.LIGHT;
+        getWindow().getDecorView().setSystemUiVisibility(lightMode
+                ? View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
                         | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
-        );
+                : 0);
         setContentView(createContentView());
     }
 
@@ -109,7 +112,7 @@ public final class MainActivity extends Activity {
         addWithTopMargin(content, title, 18);
 
         TextView subtitle = label(
-                "内屏和外屏，各自播放喜欢的视频。",
+                "内屏和外屏都可设置浅色与深色视频，跟随系统自动切换。",
                 17,
                 color(R.color.app_text_secondary)
         );
@@ -120,11 +123,21 @@ public final class MainActivity extends Activity {
         infoBanner.setOrientation(LinearLayout.VERTICAL);
         infoBanner.setPadding(dp(16), dp(14), dp(16), dp(14));
         infoBanner.setBackground(roundedBackground(color(R.color.app_info), 18, 0, 0));
-        TextView infoTitle = label("已启用 Android 多显示屏壁纸模式", 14, color(R.color.app_primary_dark));
+        TextView infoTitle = label(
+                "跟随系统外观自动切换",
+                14,
+                color(R.color.app_primary_dark)
+        );
         infoTitle.setTypeface(infoTitle.getTypeface(), android.graphics.Typeface.BOLD);
         infoBanner.addView(infoTitle);
+        systemModeStatus = label("", 13, color(R.color.app_primary_dark));
+        systemModeStatus.setTypeface(
+                systemModeStatus.getTypeface(),
+                android.graphics.Typeface.BOLD
+        );
+        addWithTopMargin(infoBanner, systemModeStatus, 6);
         TextView infoText = label(
-                "双 Display 机型可同时运行两个视频；复用单 Display 的机型会在折叠与展开时自动切换。",
+                "某个模式未单独设置时，会暂时使用同一屏幕的另一模式视频。",
                 13,
                 color(R.color.app_primary_dark)
         );
@@ -239,41 +252,72 @@ public final class MainActivity extends Activity {
         addWithTopMargin(card, roleLabel, 16);
 
         TextView cardTitle = label(
-                inner ? "内屏视频" : "外屏视频",
+                inner ? "内屏壁纸" : "外屏壁纸",
                 22,
                 color(R.color.app_text)
         );
         cardTitle.setTypeface(cardTitle.getTypeface(), android.graphics.Typeface.BOLD);
         addWithTopMargin(card, cardTitle, 3);
 
-        TextView videoStatus = label("尚未选择", 14, color(R.color.app_text_secondary));
-        videoStatus.setMaxLines(2);
-        videoStatus.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE);
-        videoStatus.setMinHeight(dp(45));
-        addWithTopMargin(card, videoStatus, 10);
-
-        Button chooseButton = secondaryButton(inner ? "选择内屏视频" : "选择外屏视频");
-        chooseButton.setOnClickListener(view -> chooseVideo(role));
-        addWithTopMargin(card, chooseButton, 14);
-
-        Button clearButton = textButton("清除已选视频");
-        clearButton.setOnClickListener(view -> {
-            VideoPreferences.clearVideo(this, role);
-            refreshUi();
-        });
-        addWithTopMargin(card, clearButton, 4);
-
-        if (inner) {
-            innerVideoStatus = videoStatus;
-            clearInnerButton = clearButton;
-        } else {
-            outerVideoStatus = videoStatus;
-            clearOuterButton = clearButton;
-        }
+        addWithTopMargin(
+                card,
+                createModeSection(role, WallpaperMode.LIGHT),
+                14
+        );
+        addWithTopMargin(
+                card,
+                createModeSection(role, WallpaperMode.DARK),
+                12
+        );
         return card;
     }
 
-    private void chooseVideo(ScreenRole role) {
+    private View createModeSection(ScreenRole role, WallpaperMode mode) {
+        LinearLayout section = new LinearLayout(this);
+        section.setOrientation(LinearLayout.VERTICAL);
+        section.setPadding(dp(14), dp(14), dp(14), dp(10));
+        section.setBackground(
+                roundedBackground(color(R.color.app_background), 17, 0, 0)
+        );
+
+        TextView modeTitle = label(
+                mode.displayName() + "模式",
+                16,
+                color(R.color.app_text)
+        );
+        modeTitle.setTypeface(modeTitle.getTypeface(), android.graphics.Typeface.BOLD);
+        section.addView(modeTitle);
+
+        TextView modeHint = label(
+                "系统使用" + mode.displayName() + "外观时播放",
+                12,
+                color(R.color.app_text_secondary)
+        );
+        addWithTopMargin(section, modeHint, 3);
+
+        TextView videoStatus = label("尚未选择", 13, color(R.color.app_text_secondary));
+        videoStatus.setMaxLines(2);
+        videoStatus.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE);
+        videoStatus.setMinHeight(dp(40));
+        addWithTopMargin(section, videoStatus, 10);
+
+        Button chooseButton = secondaryButton("选择" + mode.displayName() + "模式视频");
+        chooseButton.setOnClickListener(view -> chooseVideo(role, mode));
+        addWithTopMargin(section, chooseButton, 8);
+
+        Button clearButton = textButton("清除这个视频");
+        clearButton.setOnClickListener(view -> {
+            VideoPreferences.clearVideo(this, role, mode);
+            refreshUi();
+        });
+        addWithTopMargin(section, clearButton, 2);
+
+        videoStatuses[role.ordinal()][mode.ordinal()] = videoStatus;
+        clearVideoButtons[role.ordinal()][mode.ordinal()] = clearButton;
+        return section;
+    }
+
+    private void chooseVideo(ScreenRole role, WallpaperMode mode) {
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
         intent.setType("video/*");
@@ -281,7 +325,7 @@ public final class MainActivity extends Activity {
         intent.addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
         startActivityForResult(
                 intent,
-                role == ScreenRole.INNER ? REQUEST_INNER_VIDEO : REQUEST_OUTER_VIDEO
+                requestCode(role, mode)
         );
     }
 
@@ -292,7 +336,7 @@ public final class MainActivity extends Activity {
         if (resultCode != RESULT_OK || data == null || data.getData() == null) {
             return;
         }
-        if (requestCode != REQUEST_INNER_VIDEO && requestCode != REQUEST_OUTER_VIDEO) {
+        if (!isVideoRequest(requestCode)) {
             return;
         }
 
@@ -311,11 +355,36 @@ public final class MainActivity extends Activity {
             return;
         }
 
-        ScreenRole role =
-                requestCode == REQUEST_INNER_VIDEO ? ScreenRole.INNER : ScreenRole.OUTER;
-        VideoPreferences.setVideo(this, role, uri, queryDisplayName(uri));
-        Toast.makeText(this, role.displayName() + "视频已更新", Toast.LENGTH_SHORT).show();
+        ScreenRole role = roleForRequest(requestCode);
+        WallpaperMode mode = modeForRequest(requestCode);
+        VideoPreferences.setVideo(this, role, mode, uri, queryDisplayName(uri));
+        Toast.makeText(
+                this,
+                role.displayName() + mode.displayName() + "模式视频已更新",
+                Toast.LENGTH_SHORT
+        ).show();
         refreshUi();
+    }
+
+    private int requestCode(ScreenRole role, WallpaperMode mode) {
+        return REQUEST_VIDEO_BASE
+                + role.ordinal() * WallpaperMode.values().length
+                + mode.ordinal();
+    }
+
+    private boolean isVideoRequest(int requestCode) {
+        return requestCode >= REQUEST_VIDEO_BASE
+                && requestCode < REQUEST_VIDEO_BASE + REQUEST_VIDEO_COUNT;
+    }
+
+    private ScreenRole roleForRequest(int requestCode) {
+        int selectionIndex = requestCode - REQUEST_VIDEO_BASE;
+        return ScreenRole.values()[selectionIndex / WallpaperMode.values().length];
+    }
+
+    private WallpaperMode modeForRequest(int requestCode) {
+        int selectionIndex = requestCode - REQUEST_VIDEO_BASE;
+        return WallpaperMode.values()[selectionIndex % WallpaperMode.values().length];
     }
 
     private String queryDisplayName(Uri uri) {
@@ -342,8 +411,7 @@ public final class MainActivity extends Activity {
     }
 
     private void openWallpaperPreview() {
-        if (!VideoPreferences.hasVideo(this, ScreenRole.INNER)
-                && !VideoPreferences.hasVideo(this, ScreenRole.OUTER)) {
+        if (!VideoPreferences.hasAnyVideo(this)) {
             Toast.makeText(this, "请先至少选择一个视频", Toast.LENGTH_SHORT).show();
             return;
         }
@@ -363,8 +431,22 @@ public final class MainActivity extends Activity {
     }
 
     private void refreshUi() {
-        updateVideoStatus(ScreenRole.INNER, innerVideoStatus, clearInnerButton);
-        updateVideoStatus(ScreenRole.OUTER, outerVideoStatus, clearOuterButton);
+        for (ScreenRole role : ScreenRole.values()) {
+            for (WallpaperMode mode : WallpaperMode.values()) {
+                updateVideoStatus(
+                        role,
+                        mode,
+                        videoStatuses[role.ordinal()][mode.ordinal()],
+                        clearVideoButtons[role.ordinal()][mode.ordinal()]
+                );
+            }
+        }
+
+        WallpaperMode currentMode = WallpaperMode.from(this);
+        systemModeStatus.setText(getString(
+                R.string.system_mode_status,
+                currentMode.displayName()
+        ));
 
         boolean active = isWallpaperActive();
         wallpaperStatus.setText(active ? "●  当前正在使用" : "○  尚未启用");
@@ -392,9 +474,25 @@ public final class MainActivity extends Activity {
         refreshDisplayStatus();
     }
 
-    private void updateVideoStatus(ScreenRole role, TextView status, Button clearButton) {
-        boolean configured = VideoPreferences.hasVideo(this, role);
-        status.setText(configured ? VideoPreferences.getName(this, role) : "尚未选择视频");
+    private void updateVideoStatus(
+            ScreenRole role,
+            WallpaperMode mode,
+            TextView status,
+            Button clearButton
+    ) {
+        boolean configured = VideoPreferences.hasVideo(this, role, mode);
+        boolean fallbackConfigured =
+                VideoPreferences.hasVideo(this, role, mode.opposite());
+        if (configured) {
+            status.setText(VideoPreferences.getName(this, role, mode));
+        } else if (fallbackConfigured) {
+            status.setText(getString(
+                    R.string.video_mode_fallback,
+                    mode.opposite().displayName()
+            ));
+        } else {
+            status.setText("尚未选择视频");
+        }
         status.setTextColor(
                 color(configured ? R.color.app_primary_dark : R.color.app_text_secondary)
         );

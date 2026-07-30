@@ -6,10 +6,15 @@ import android.net.Uri;
 
 public final class VideoPreferences {
     public static final String FILE_NAME = "video_wallpaper";
+    // Keep the original keys as the light-mode slots so existing selections survive upgrades.
     public static final String KEY_INNER_URI = "inner_video_uri";
     public static final String KEY_INNER_NAME = "inner_video_name";
     public static final String KEY_OUTER_URI = "outer_video_uri";
     public static final String KEY_OUTER_NAME = "outer_video_name";
+    public static final String KEY_INNER_DARK_URI = "inner_dark_video_uri";
+    public static final String KEY_INNER_DARK_NAME = "inner_dark_video_name";
+    public static final String KEY_OUTER_DARK_URI = "outer_dark_video_uri";
+    public static final String KEY_OUTER_DARK_NAME = "outer_dark_video_name";
     public static final String KEY_SWAP_SCREENS = "swap_screen_roles";
 
     private VideoPreferences() {
@@ -19,52 +24,122 @@ public final class VideoPreferences {
         return context.getSharedPreferences(FILE_NAME, Context.MODE_PRIVATE);
     }
 
-    public static String uriKey(ScreenRole role) {
+    public static String uriKey(ScreenRole role, WallpaperMode mode) {
+        if (mode == WallpaperMode.DARK) {
+            return role == ScreenRole.INNER ? KEY_INNER_DARK_URI : KEY_OUTER_DARK_URI;
+        }
         return role == ScreenRole.INNER ? KEY_INNER_URI : KEY_OUTER_URI;
     }
 
-    private static String nameKey(ScreenRole role) {
+    private static String nameKey(ScreenRole role, WallpaperMode mode) {
+        if (mode == WallpaperMode.DARK) {
+            return role == ScreenRole.INNER ? KEY_INNER_DARK_NAME : KEY_OUTER_DARK_NAME;
+        }
         return role == ScreenRole.INNER ? KEY_INNER_NAME : KEY_OUTER_NAME;
     }
 
-    public static String getUri(Context context, ScreenRole role) {
-        return get(context).getString(uriKey(role), "");
+    public static String getUri(Context context, ScreenRole role, WallpaperMode mode) {
+        return get(context).getString(uriKey(role, mode), "");
     }
 
-    public static String getName(Context context, ScreenRole role) {
-        return get(context).getString(nameKey(role), "");
+    public static String getName(Context context, ScreenRole role, WallpaperMode mode) {
+        return get(context).getString(nameKey(role, mode), "");
     }
 
-    public static boolean hasVideo(Context context, ScreenRole role) {
-        return !getUri(context, role).isEmpty();
+    public static String getEffectiveUri(
+            Context context,
+            ScreenRole role,
+            WallpaperMode mode
+    ) {
+        return selectForMode(
+                getUri(context, role, WallpaperMode.LIGHT),
+                getUri(context, role, WallpaperMode.DARK),
+                mode
+        );
     }
 
-    public static void setVideo(Context context, ScreenRole role, Uri uri, String name) {
+    static String selectForMode(String lightValue, String darkValue, WallpaperMode mode) {
+        String preferred = mode == WallpaperMode.DARK ? darkValue : lightValue;
+        return preferred.isEmpty()
+                ? (mode == WallpaperMode.DARK ? lightValue : darkValue)
+                : preferred;
+    }
+
+    public static boolean hasVideo(
+            Context context,
+            ScreenRole role,
+            WallpaperMode mode
+    ) {
+        return !getUri(context, role, mode).isEmpty();
+    }
+
+    public static boolean hasAnyVideo(Context context, ScreenRole role) {
+        return hasVideo(context, role, WallpaperMode.LIGHT)
+                || hasVideo(context, role, WallpaperMode.DARK);
+    }
+
+    public static boolean hasAnyVideo(Context context) {
+        return hasAnyVideo(context, ScreenRole.INNER)
+                || hasAnyVideo(context, ScreenRole.OUTER);
+    }
+
+    public static void setVideo(
+            Context context,
+            ScreenRole role,
+            WallpaperMode mode,
+            Uri uri,
+            String name
+    ) {
+        String oldUri = getUri(context, role, mode);
         get(context)
                 .edit()
-                .putString(uriKey(role), uri.toString())
-                .putString(nameKey(role), name)
+                .putString(uriKey(role, mode), uri.toString())
+                .putString(nameKey(role, mode), name)
                 .apply();
+        if (!oldUri.equals(uri.toString())) {
+            releasePermissionIfUnused(context, oldUri);
+        }
     }
 
-    public static void clearVideo(Context context, ScreenRole role) {
-        String oldUri = getUri(context, role);
-        ScreenRole otherRole = role.opposite();
+    public static void clearVideo(
+            Context context,
+            ScreenRole role,
+            WallpaperMode mode
+    ) {
+        String oldUri = getUri(context, role, mode);
         get(context)
                 .edit()
-                .remove(uriKey(role))
-                .remove(nameKey(role))
+                .remove(uriKey(role, mode))
+                .remove(nameKey(role, mode))
                 .apply();
+        releasePermissionIfUnused(context, oldUri);
+    }
 
-        if (!oldUri.isEmpty() && !oldUri.equals(getUri(context, otherRole))) {
-            try {
-                context.getContentResolver().releasePersistableUriPermission(
-                        Uri.parse(oldUri),
-                        android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
-                );
-            } catch (SecurityException ignored) {
-                // The provider may not expose a persisted grant; the preference is still cleared.
+    public static boolean isVideoUriKey(String key) {
+        return KEY_INNER_URI.equals(key)
+                || KEY_OUTER_URI.equals(key)
+                || KEY_INNER_DARK_URI.equals(key)
+                || KEY_OUTER_DARK_URI.equals(key);
+    }
+
+    private static void releasePermissionIfUnused(Context context, String uri) {
+        if (uri.isEmpty()) {
+            return;
+        }
+        for (ScreenRole role : ScreenRole.values()) {
+            for (WallpaperMode mode : WallpaperMode.values()) {
+                if (uri.equals(getUri(context, role, mode))) {
+                    return;
+                }
             }
+        }
+        try {
+            context.getContentResolver().releasePersistableUriPermission(
+                    Uri.parse(uri),
+                    android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+            );
+        } catch (SecurityException ignored) {
+            // The provider may not expose a persisted grant; the preference is still updated.
         }
     }
 
