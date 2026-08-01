@@ -3,6 +3,7 @@ package com.whw.videowallpaper;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.content.res.Configuration;
+import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
@@ -12,6 +13,7 @@ import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.Looper;
 import android.os.Process;
+import android.os.SystemClock;
 import android.service.wallpaper.WallpaperService;
 import android.util.Log;
 import android.view.SurfaceHolder;
@@ -22,7 +24,26 @@ import java.util.Set;
 public final class VideoWallpaperService extends WallpaperService {
     private static final String TAG = "DualScreenWallpaper";
     private static final long INVISIBLE_RELEASE_DELAY_MS = 3_000L;
+    private static final long POSTER_PREWARM_DELAY_MS = 2_000L;
     private final Set<VideoEngine> activeEngines = new HashSet<>();
+    private Handler serviceHandler;
+    private Runnable prewarmPosters;
+
+    @Override
+    public void onCreate() {
+        super.onCreate();
+        serviceHandler = new Handler(Looper.getMainLooper());
+        prewarmPosters = () -> VideoPosterStore.prewarm(this);
+        serviceHandler.postDelayed(prewarmPosters, POSTER_PREWARM_DELAY_MS);
+    }
+
+    @Override
+    public void onDestroy() {
+        if (serviceHandler != null && prewarmPosters != null) {
+            serviceHandler.removeCallbacks(prewarmPosters);
+        }
+        super.onDestroy();
+    }
 
     @Override
     public Engine onCreateEngine() {
@@ -62,6 +83,7 @@ public final class VideoWallpaperService extends WallpaperService {
         private HandlerThread playbackThread;
         private Handler playbackHandler;
         private boolean surfaceReady;
+        private boolean surfaceNeedsPoster = true;
         private boolean visible;
         private boolean reloadWhenVisible;
         private int surfaceWidth;
@@ -85,6 +107,7 @@ public final class VideoWallpaperService extends WallpaperService {
             super.onSurfaceCreated(holder);
             surfaceHolder = holder;
             surfaceReady = true;
+            surfaceNeedsPoster = true;
         }
 
         @Override
@@ -97,6 +120,9 @@ public final class VideoWallpaperService extends WallpaperService {
             super.onSurfaceChanged(holder, format, width, height);
             surfaceHolder = holder;
             surfaceReady = true;
+            if (width != surfaceWidth || height != surfaceHeight) {
+                surfaceNeedsPoster = true;
+            }
             surfaceWidth = width;
             surfaceHeight = height;
             if (!visible) {
@@ -111,7 +137,9 @@ public final class VideoWallpaperService extends WallpaperService {
         public void onSurfaceRedrawNeeded(SurfaceHolder holder) {
             super.onSurfaceRedrawNeeded(holder);
             if (visible && videoPlayer == null) {
-                drawPlaceholder(null);
+                if (loadedUri.isEmpty() || !drawCachedPoster(loadedUri)) {
+                    drawPlaceholder(null);
+                }
             }
         }
 
@@ -172,6 +200,7 @@ public final class VideoWallpaperService extends WallpaperService {
         @Override
         public void onSurfaceDestroyed(SurfaceHolder holder) {
             surfaceReady = false;
+            surfaceNeedsPoster = true;
             surfaceHolder = null;
             mainHandler.removeCallbacks(releaseHiddenDecoder);
             releasePlayer();
@@ -236,6 +265,12 @@ public final class VideoWallpaperService extends WallpaperService {
                 return;
             }
 
+            if (surfaceNeedsPoster) {
+                if (drawCachedPoster(nextUri)) {
+                    surfaceNeedsPoster = false;
+                }
+            }
+
             Handler activePlaybackHandler = playbackHandler;
             if (activePlaybackHandler == null) {
                 drawPlaceholder("视频渲染未就绪");
@@ -243,6 +278,7 @@ public final class VideoWallpaperService extends WallpaperService {
             }
 
             final Uri videoUri = Uri.parse(nextUri);
+            final long loadStartedNs = SystemClock.elapsedRealtimeNanos();
             final VideoCodecPlayer candidate = new VideoCodecPlayer(
                     displayContext,
                     videoUri,
@@ -250,6 +286,22 @@ public final class VideoWallpaperService extends WallpaperService {
                     activePlaybackHandler,
                     visible,
                     new VideoCodecPlayer.Callback() {
+                        @Override
+                        public void onFirstFrameRendered(VideoCodecPlayer player) {
+                            if (videoPlayer != player) {
+                                return;
+                            }
+                            surfaceNeedsPoster = false;
+                            long elapsedMs = (SystemClock.elapsedRealtimeNanos()
+                                    - loadStartedNs) / 1_000_000L;
+                            Log.i(
+                                    TAG,
+                                    "First frame for " + currentRole
+                                            + " rendered in " + elapsedMs + "ms"
+                            );
+                            VideoPosterStore.prepare(displayContext, nextUri);
+                        }
+
                         @Override
                         public void onPlaybackError(
                                 VideoCodecPlayer player,
@@ -260,6 +312,40 @@ public final class VideoWallpaperService extends WallpaperService {
                     }
             );
             videoPlayer = candidate;
+        }
+
+        private boolean drawCachedPoster(String uriString) {
+            Bitmap poster = VideoPosterStore.load(VideoWallpaperService.this, uriString);
+            if (poster == null || !surfaceReady || surfaceHolder == null) {
+                if (poster != null) {
+                    poster.recycle();
+                }
+                return false;
+            }
+
+            long startedNs = SystemClock.elapsedRealtimeNanos();
+            try {
+                boolean drawn = WallpaperPosterRenderer.draw(
+                        surfaceHolder.getSurface(),
+                        poster,
+                        surfaceWidth,
+                        surfaceHeight
+                );
+                if (drawn) {
+                    long elapsedMs = (SystemClock.elapsedRealtimeNanos()
+                            - startedNs) / 1_000_000L;
+                    Log.i(
+                            TAG,
+                            "Drew cached poster for " + currentRole + " in " + elapsedMs + "ms"
+                    );
+                }
+                return drawn;
+            } catch (RuntimeException error) {
+                Log.w(TAG, "Could not draw cached video poster", error);
+                return false;
+            } finally {
+                poster.recycle();
+            }
         }
 
         private void ensurePlaybackWorker() {

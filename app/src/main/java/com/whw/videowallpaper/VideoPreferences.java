@@ -133,6 +133,7 @@ public final class VideoPreferences {
                 }
             }
         }
+        VideoPosterStore.delete(context, uri);
         try {
             context.getContentResolver().releasePersistableUriPermission(
                     Uri.parse(uri),

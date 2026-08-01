@@ -45,6 +45,8 @@ final class VideoCodecPlayer {
     private static final int MAX_OUTPUTS_PER_PUMP = 4;
 
     interface Callback {
+        void onFirstFrameRendered(VideoCodecPlayer player);
+
         void onPlaybackError(VideoCodecPlayer player, Throwable error);
     }
 
@@ -98,6 +100,7 @@ final class VideoCodecPlayer {
     private boolean playing;
     private boolean inputEnded;
     private boolean firstFrameRendered;
+    private boolean firstFrameCallbackSent;
     private boolean errorReported;
     private long durationUs;
 
@@ -507,10 +510,10 @@ final class VideoCodecPlayer {
             codec.releaseOutputBuffer(output.index, false);
         } else if (output.targetRealtimeNs > nowNs) {
             codec.releaseOutputBuffer(output.index, output.targetRealtimeNs);
-            firstFrameRendered = true;
+            markFirstFrameRendered();
         } else {
             codec.releaseOutputBuffer(output.index, true);
-            firstFrameRendered = true;
+            markFirstFrameRendered();
         }
         pendingOutput = null;
 
@@ -518,6 +521,19 @@ final class VideoCodecPlayer {
             restartLoop();
         }
         return true;
+    }
+
+    private void markFirstFrameRendered() {
+        firstFrameRendered = true;
+        if (firstFrameCallbackSent) {
+            return;
+        }
+        firstFrameCallbackSent = true;
+        mainHandler.post(() -> {
+            if (!releaseRequested) {
+                callback.onFirstFrameRendered(this);
+            }
+        });
     }
 
     private void restartLoop() {

@@ -50,6 +50,7 @@ public final class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        VideoPosterStore.prewarm(this);
         getWindow().setStatusBarColor(color(R.color.app_background));
         getWindow().setNavigationBarColor(color(R.color.app_background));
         boolean lightMode = WallpaperMode.from(this) == WallpaperMode.LIGHT;
@@ -358,6 +359,7 @@ public final class MainActivity extends Activity {
         ScreenRole role = roleForRequest(requestCode);
         WallpaperMode mode = modeForRequest(requestCode);
         VideoPreferences.setVideo(this, role, mode, uri, queryDisplayName(uri));
+        VideoPosterStore.prepare(this, uri.toString());
         Toast.makeText(
                 this,
                 role.displayName() + mode.displayName() + "模式视频已更新",
