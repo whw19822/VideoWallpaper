@@ -7,18 +7,15 @@ import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.PixelFormat;
-import android.media.AudioAttributes;
-import android.media.MediaMetadataRetriever;
-import android.media.MediaPlayer;
 import android.net.Uri;
 import android.os.Handler;
+import android.os.HandlerThread;
 import android.os.Looper;
+import android.os.Process;
 import android.service.wallpaper.WallpaperService;
 import android.util.Log;
-import android.view.Surface;
 import android.view.SurfaceHolder;
 
-import java.io.IOException;
 import java.util.HashSet;
 import java.util.Set;
 
@@ -61,16 +58,14 @@ public final class VideoWallpaperService extends WallpaperService {
         private final Handler mainHandler = new Handler(Looper.getMainLooper());
         private final Runnable releaseHiddenDecoder = this::releaseDecoderIfInvisible;
         private SurfaceHolder surfaceHolder;
-        private MediaPlayer mediaPlayer;
-        private WallpaperGlRenderer renderer;
-        private Surface rendererInputSurface;
+        private VideoCodecPlayer videoPlayer;
+        private HandlerThread playbackThread;
+        private Handler playbackHandler;
         private boolean surfaceReady;
         private boolean visible;
-        private boolean prepared;
         private boolean reloadWhenVisible;
         private int surfaceWidth;
         private int surfaceHeight;
-        private int generation;
         private ScreenRole currentRole = ScreenRole.INNER;
         private WallpaperMode currentMode = WallpaperMode.LIGHT;
         private String loadedUri = "";
@@ -108,16 +103,14 @@ public final class VideoWallpaperService extends WallpaperService {
                 reloadWhenVisible = true;
                 return;
             }
-            ensureRenderer();
-            if (rendererInputSurface != null) {
-                reloadVideo(true);
-            }
+            ensurePlaybackWorker();
+            reloadVideo(true);
         }
 
         @Override
         public void onSurfaceRedrawNeeded(SurfaceHolder holder) {
             super.onSurfaceRedrawNeeded(holder);
-            if (visible && mediaPlayer == null) {
+            if (visible && videoPlayer == null) {
                 drawPlaceholder(null);
             }
         }
@@ -130,17 +123,13 @@ public final class VideoWallpaperService extends WallpaperService {
                 if (!surfaceReady) {
                     return;
                 }
-                ensureRenderer();
-                if (mediaPlayer == null || reloadWhenVisible) {
+                ensurePlaybackWorker();
+                if (videoPlayer == null || reloadWhenVisible) {
                     reloadWhenVisible = false;
                     reloadVideo(false);
                 }
-                if (mediaPlayer != null && prepared) {
-                    try {
-                        mediaPlayer.start();
-                    } catch (IllegalStateException error) {
-                        Log.w(TAG, "Could not resume wallpaper playback", error);
-                    }
+                if (videoPlayer != null) {
+                    videoPlayer.play();
                 }
                 return;
             }
@@ -149,22 +138,11 @@ public final class VideoWallpaperService extends WallpaperService {
             mainHandler.postDelayed(releaseHiddenDecoder, INVISIBLE_RELEASE_DELAY_MS);
         }
 
-        private void ensureRenderer() {
-            if (!surfaceReady || surfaceHolder == null || !visible) {
-                return;
-            }
-            if (renderer == null) {
-                createRenderer(surfaceHolder.getSurface(), surfaceWidth, surfaceHeight);
-            } else {
-                renderer.resize(surfaceWidth, surfaceHeight);
-            }
-        }
-
         private void releaseInvisibleResourcesNow() {
             if (!visible) {
                 mainHandler.removeCallbacks(releaseHiddenDecoder);
                 releasePlayer();
-                releaseRenderer();
+                releasePlaybackWorker();
                 Log.d(TAG, "Released all hidden wallpaper resources for " + currentRole);
             }
         }
@@ -172,24 +150,14 @@ public final class VideoWallpaperService extends WallpaperService {
         private void releaseDecoderIfInvisible() {
             if (!visible) {
                 releasePlayer();
-                if (renderer != null) {
-                    rendererInputSurface = null;
-                    renderer.resetInputSurface();
-                }
+                releasePlaybackWorker();
                 Log.d(TAG, "Released hidden video decoder for " + currentRole);
             }
         }
 
         private void pausePlayer() {
-            if (mediaPlayer == null || !prepared) {
-                return;
-            }
-            try {
-                if (mediaPlayer.isPlaying()) {
-                    mediaPlayer.pause();
-                }
-            } catch (IllegalStateException error) {
-                Log.w(TAG, "Could not pause wallpaper playback", error);
+            if (videoPlayer != null) {
+                videoPlayer.pause();
             }
         }
 
@@ -207,7 +175,7 @@ public final class VideoWallpaperService extends WallpaperService {
             surfaceHolder = null;
             mainHandler.removeCallbacks(releaseHiddenDecoder);
             releasePlayer();
-            releaseRenderer();
+            releasePlaybackWorker();
             super.onSurfaceDestroyed(holder);
         }
 
@@ -218,7 +186,7 @@ public final class VideoWallpaperService extends WallpaperService {
             VideoPreferences.get(VideoWallpaperService.this)
                     .unregisterOnSharedPreferenceChangeListener(this);
             releasePlayer();
-            releaseRenderer();
+            releasePlaybackWorker();
             super.onDestroy();
         }
 
@@ -239,15 +207,13 @@ public final class VideoWallpaperService extends WallpaperService {
             if (!surfaceReady
                     || surfaceHolder == null
                     || !visible
-                    || renderer == null
-                    || rendererInputSurface == null
                     || surfaceWidth <= 0
-                    || surfaceHeight <= 0) {
+                    || surfaceHeight <= 0
+                    || !surfaceHolder.getSurface().isValid()) {
                 return;
             }
 
             Context displayContext = getDisplayContext();
-            WallpaperGlRenderer currentRenderer = renderer;
             ScreenRole nextRole =
                     ScreenRoleDetector.detect(displayContext, surfaceWidth, surfaceHeight);
             WallpaperMode nextMode = WallpaperMode.from(displayContext);
@@ -257,7 +223,7 @@ public final class VideoWallpaperService extends WallpaperService {
             if (!force
                     && nextRole == currentRole
                     && nextUri.equals(loadedUri)
-                    && mediaPlayer != null) {
+                    && videoPlayer != null) {
                 return;
             }
 
@@ -270,147 +236,47 @@ public final class VideoWallpaperService extends WallpaperService {
                 return;
             }
 
-            final int loadGeneration = ++generation;
-            final MediaPlayer candidate = new MediaPlayer();
+            Handler activePlaybackHandler = playbackHandler;
+            if (activePlaybackHandler == null) {
+                drawPlaceholder("视频渲染未就绪");
+                return;
+            }
+
             final Uri videoUri = Uri.parse(nextUri);
-            final VideoGeometry geometry = readVideoGeometry(displayContext, videoUri);
-            mediaPlayer = candidate;
-            prepared = false;
-            if (geometry.hasSize()) {
-                currentRenderer.setVideoSize(geometry.displayWidth(), geometry.displayHeight());
-            }
-
-            try {
-                candidate.setAudioAttributes(
-                        new AudioAttributes.Builder()
-                                .setUsage(AudioAttributes.USAGE_MEDIA)
-                                .setContentType(AudioAttributes.CONTENT_TYPE_MOVIE)
-                                .build()
-                );
-                candidate.setVolume(0f, 0f);
-                candidate.setLooping(true);
-                candidate.setSurface(rendererInputSurface);
-                candidate.setDataSource(displayContext, videoUri);
-                candidate.setOnVideoSizeChangedListener((player, width, height) -> {
-                    if (mediaPlayer != player || renderer != currentRenderer) {
-                        return;
-                    }
-                    if (geometry.hasSize()) {
-                        currentRenderer.setVideoSize(
-                                geometry.displayWidth(),
-                                geometry.displayHeight()
-                        );
-                    } else {
-                        currentRenderer.setVideoSize(width, height);
-                    }
-                });
-                candidate.setOnPreparedListener(player -> {
-                    if (mediaPlayer != player || generation != loadGeneration || !surfaceReady) {
-                        safelyRelease(player);
-                        return;
-                    }
-                    prepared = true;
-                    try {
-                        if (visible) {
-                            player.start();
-                        }
-                    } catch (IllegalStateException error) {
-                        handlePlaybackError(player, "视频准备失败", error);
-                    }
-                });
-                candidate.setOnErrorListener((player, what, extra) -> {
-                    handlePlaybackError(
-                            player,
-                            "视频无法播放",
-                            new IllegalStateException("MediaPlayer error " + what + "/" + extra)
-                    );
-                    return true;
-                });
-                candidate.prepareAsync();
-            } catch (IOException | RuntimeException error) {
-                handlePlaybackError(candidate, "无法读取视频", error);
-            }
-        }
-
-        private void createRenderer(Surface outputSurface, int width, int height) {
-            final WallpaperGlRenderer newRenderer = new WallpaperGlRenderer(
-                    outputSurface,
-                    width,
-                    height,
-                    new WallpaperGlRenderer.Callback() {
+            final VideoCodecPlayer candidate = new VideoCodecPlayer(
+                    displayContext,
+                    videoUri,
+                    surfaceHolder.getSurface(),
+                    activePlaybackHandler,
+                    visible,
+                    new VideoCodecPlayer.Callback() {
                         @Override
-                        public void onInputSurfaceReady(
-                                WallpaperGlRenderer readyRenderer,
-                                Surface inputSurface
-                        ) {
-                            if (renderer != readyRenderer || !surfaceReady) {
-                                return;
-                            }
-                            rendererInputSurface = inputSurface;
-                            if (visible) {
-                                reloadVideo(true);
-                            }
-                        }
-
-                        @Override
-                        public void onRendererError(
-                                WallpaperGlRenderer failedRenderer,
+                        public void onPlaybackError(
+                                VideoCodecPlayer player,
                                 Throwable error
                         ) {
-                            if (renderer != failedRenderer) {
-                                return;
-                            }
-                            Log.e(TAG, "Falling back to an error placeholder", error);
-                            releasePlayer();
-                            renderer = null;
-                            rendererInputSurface = null;
-                            failedRenderer.release();
-                            drawPlaceholder("视频渲染失败");
+                            handlePlaybackError(player, "视频无法播放", error);
                         }
                     }
             );
-            renderer = newRenderer;
+            videoPlayer = candidate;
         }
 
-        private VideoGeometry readVideoGeometry(Context context, Uri uri) {
-            MediaMetadataRetriever retriever = new MediaMetadataRetriever();
-            try {
-                retriever.setDataSource(context, uri);
-                int width = parseMetadata(
-                        retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)
-                );
-                int height = parseMetadata(
-                        retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)
-                );
-                int rotation = parseMetadata(
-                        retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)
-                );
-                return new VideoGeometry(width, height, rotation);
-            } catch (RuntimeException error) {
-                Log.w(TAG, "Could not read video geometry", error);
-                return VideoGeometry.UNKNOWN;
-            } finally {
-                try {
-                    retriever.release();
-                } catch (IOException | RuntimeException ignored) {
-                    // Metadata failure does not prevent MediaPlayer from trying the URI.
-                }
+        private void ensurePlaybackWorker() {
+            if (playbackThread != null && playbackHandler != null) {
+                return;
             }
-        }
-
-        private int parseMetadata(String value) {
-            if (value == null) {
-                return 0;
-            }
-            try {
-                return Integer.parseInt(value);
-            } catch (NumberFormatException ignored) {
-                return 0;
-            }
+            HandlerThread newThread = new HandlerThread(
+                    "VideoWallpaperEngine",
+                    Process.THREAD_PRIORITY_DISPLAY
+            );
+            newThread.start();
+            playbackThread = newThread;
+            playbackHandler = new Handler(newThread.getLooper());
         }
 
         private void handlePlaybackError(
-                MediaPlayer failedPlayer,
+                VideoCodecPlayer failedPlayer,
                 String message,
                 Throwable error
         ) {
@@ -419,55 +285,35 @@ public final class VideoWallpaperService extends WallpaperService {
                     message + " for " + currentRole + " in " + currentMode + " mode",
                     error
             );
-            if (failedPlayer == mediaPlayer) {
-                mediaPlayer = null;
-                prepared = false;
-                safelyRelease(failedPlayer);
+            if (failedPlayer == videoPlayer) {
+                videoPlayer = null;
+                failedPlayer.release();
                 drawPlaceholder(message);
             } else {
-                safelyRelease(failedPlayer);
+                failedPlayer.release();
             }
         }
 
         private void releasePlayer() {
-            generation++;
-            MediaPlayer player = mediaPlayer;
-            mediaPlayer = null;
-            prepared = false;
+            VideoCodecPlayer player = videoPlayer;
+            videoPlayer = null;
             if (player != null) {
-                try {
-                    player.setSurface(null);
-                } catch (RuntimeException ignored) {
-                    // The player may already be in the error state.
-                }
-                safelyRelease(player);
+                player.release();
             }
         }
 
-        private void releaseRenderer() {
-            WallpaperGlRenderer activeRenderer = renderer;
-            renderer = null;
-            rendererInputSurface = null;
-            if (activeRenderer != null) {
-                activeRenderer.release();
+        private void releasePlaybackWorker() {
+            HandlerThread activeThread = playbackThread;
+            Handler activeHandler = playbackHandler;
+            playbackThread = null;
+            playbackHandler = null;
+            if (activeThread != null && activeHandler != null) {
+                activeHandler.post(activeThread::quitSafely);
             }
-        }
-
-        private void safelyRelease(MediaPlayer player) {
-            try {
-                player.reset();
-            } catch (RuntimeException ignored) {
-                // Release is still safe after a MediaPlayer state error.
-            }
-            player.release();
         }
 
         private void drawPlaceholder(String errorMessage) {
             if (!surfaceReady || surfaceHolder == null) {
-                return;
-            }
-            if (renderer != null) {
-                renderer.showPlaceholder();
                 return;
             }
             Canvas canvas = null;
@@ -516,29 +362,4 @@ public final class VideoWallpaperService extends WallpaperService {
         }
     }
 
-    private static final class VideoGeometry {
-        static final VideoGeometry UNKNOWN = new VideoGeometry(0, 0, 0);
-
-        final int width;
-        final int height;
-        final int rotation;
-
-        VideoGeometry(int width, int height, int rotation) {
-            this.width = width;
-            this.height = height;
-            this.rotation = rotation;
-        }
-
-        boolean hasSize() {
-            return width > 0 && height > 0;
-        }
-
-        int displayWidth() {
-            return rotation == 90 || rotation == 270 ? height : width;
-        }
-
-        int displayHeight() {
-            return rotation == 90 || rotation == 270 ? width : height;
-        }
-    }
 }
