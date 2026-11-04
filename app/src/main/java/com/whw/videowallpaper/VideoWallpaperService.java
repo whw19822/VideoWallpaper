@@ -145,6 +145,7 @@ public final class VideoWallpaperService extends WallpaperService {
 
         @Override
         public void onVisibilityChanged(boolean isVisible) {
+            boolean becameHidden = !isVisible && visible;
             visible = isVisible;
             mainHandler.removeCallbacks(releaseHiddenDecoder);
             if (isVisible) {
@@ -162,7 +163,12 @@ public final class VideoWallpaperService extends WallpaperService {
                 return;
             }
 
-            pausePlayer();
+            if (becameHidden && videoPlayer != null
+                    && !VideoPreferences.isVideoLooping(VideoWallpaperService.this)) {
+                videoPlayer.rewindAndPause();
+            } else if (becameHidden) {
+                pausePlayer();
+            }
             mainHandler.postDelayed(releaseHiddenDecoder, INVISIBLE_RELEASE_DELAY_MS);
         }
 
@@ -222,7 +228,8 @@ public final class VideoWallpaperService extends WallpaperService {
         @Override
         public void onSharedPreferenceChanged(SharedPreferences preferences, String key) {
             if (!VideoPreferences.isVideoUriKey(key)
-                    && !VideoPreferences.KEY_SWAP_SCREENS.equals(key)) {
+                    && !VideoPreferences.KEY_SWAP_SCREENS.equals(key)
+                    && !VideoPreferences.KEY_LOOP_VIDEO.equals(key)) {
                 return;
             }
             if (visible) {
@@ -285,6 +292,7 @@ public final class VideoWallpaperService extends WallpaperService {
                     surfaceHolder.getSurface(),
                     activePlaybackHandler,
                     visible,
+                    VideoPreferences.isVideoLooping(displayContext),
                     new VideoCodecPlayer.Callback() {
                         @Override
                         public void onFirstFrameRendered(VideoCodecPlayer player) {

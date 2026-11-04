@@ -15,6 +15,7 @@ public final class VideoPreferences {
     public static final String KEY_INNER_DARK_NAME = "inner_dark_video_name";
     public static final String KEY_OUTER_DARK_URI = "outer_dark_video_uri";
     public static final String KEY_OUTER_DARK_NAME = "outer_dark_video_name";
+    public static final String KEY_LOOP_VIDEO = "loop_video";
     public static final String KEY_SWAP_SCREENS = "swap_screen_roles";
 
     private VideoPreferences() {
@@ -142,6 +143,14 @@ public final class VideoPreferences {
         } catch (SecurityException ignored) {
             // The provider may not expose a persisted grant; the preference is still updated.
         }
+    }
+
+    public static boolean isVideoLooping(Context context) {
+        return get(context).getBoolean(KEY_LOOP_VIDEO, true);
+    }
+
+    public static void setVideoLooping(Context context, boolean looping) {
+        get(context).edit().putBoolean(KEY_LOOP_VIDEO, looping).apply();
     }
 
     public static boolean areScreenRolesSwapped(Context context) {

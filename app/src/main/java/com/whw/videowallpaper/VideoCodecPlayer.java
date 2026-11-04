@@ -98,6 +98,9 @@ final class VideoCodecPlayer {
     private PendingOutput pendingOutput;
     private boolean initialized;
     private boolean playing;
+    private boolean playbackEnded;
+    private boolean primingFirstFrame;
+    private final boolean looping;
     private boolean inputEnded;
     private boolean firstFrameRendered;
     private boolean firstFrameCallbackSent;
@@ -110,6 +113,7 @@ final class VideoCodecPlayer {
             Surface outputSurface,
             Handler workerHandler,
             boolean playWhenReady,
+            boolean looping,
             Callback callback
     ) {
         this.context = context.getApplicationContext();
@@ -117,15 +121,17 @@ final class VideoCodecPlayer {
         this.outputSurface = outputSurface;
         this.workerHandler = workerHandler;
         this.playing = playWhenReady;
+        this.looping = looping;
         this.callback = callback;
         workerHandler.post(this::initialize);
     }
 
     void play() {
         workerHandler.post(() -> {
-            if (releaseRequested || playing) {
+            if (releaseRequested || playbackEnded || (playing && !primingFirstFrame)) {
                 return;
             }
+            primingFirstFrame = false;
             playing = true;
             playbackClock.reanchorOnNextFrame();
             if (initialized) {
@@ -144,6 +150,36 @@ final class VideoCodecPlayer {
             workerHandler.removeCallbacks(pumpRunnable);
             discardPendingOutput();
             playbackClock.reanchorOnNextFrame();
+        });
+    }
+
+    // Replace the retained end frame while the wallpaper is hidden, not after wake-up.
+    // All codec operations stay on the same worker as normal playback.
+    void rewindAndPause() {
+        workerHandler.post(() -> {
+            if (releaseRequested || errorReported) {
+                return;
+            }
+            try {
+                workerHandler.removeCallbacks(pumpRunnable);
+                // Before the first output, retain the startup buffers (including
+                // codec-specific data) instead of flushing an initializing decoder.
+                if (firstFrameRendered && codec != null && extractor != null) {
+                    discardPendingOutput();
+                    codec.flush();
+                    extractor.seekTo(0L, MediaExtractor.SEEK_TO_PREVIOUS_SYNC);
+                    inputEnded = false;
+                }
+                playbackEnded = false;
+                playbackClock.reanchorOnNextFrame();
+                primingFirstFrame = true;
+                playing = true;
+                if (initialized) {
+                    schedulePump(0L);
+                }
+            } catch (RuntimeException error) {
+                fail(error);
+            }
         });
     }
 
@@ -378,6 +414,9 @@ final class VideoCodecPlayer {
             if (pendingOutput != null && !releasePendingOutputIfDue()) {
                 return;
             }
+            if (!playing) {
+                return;
+            }
             feedInputBuffers();
             drainOutputBuffers();
             if (playing && pendingOutput == null) {
@@ -459,7 +498,7 @@ final class VideoCodecPlayer {
             if (!hasFrame) {
                 codec.releaseOutputBuffer(outputIndex, false);
                 if (endOfStream) {
-                    restartLoop();
+                    handleEndOfStream();
                     return;
                 }
                 continue;
@@ -478,7 +517,7 @@ final class VideoCodecPlayer {
             if (!releasePendingOutputIfDue()) {
                 return;
             }
-            if (endOfStream) {
+            if (endOfStream || !playing) {
                 return;
             }
         }
@@ -504,7 +543,8 @@ final class VideoCodecPlayer {
             return false;
         }
 
-        boolean drop = firstFrameRendered
+        // A one-shot wallpaper must retain its final frame, even when decoding is late.
+        boolean drop = looping && !primingFirstFrame && firstFrameRendered
                 && nowNs - output.targetRealtimeNs > DROP_LATE_FRAME_NS;
         if (drop) {
             codec.releaseOutputBuffer(output.index, false);
@@ -517,8 +557,20 @@ final class VideoCodecPlayer {
         }
         pendingOutput = null;
 
-        if (output.endOfStream) {
-            restartLoop();
+        if (primingFirstFrame) {
+            primingFirstFrame = false;
+            playing = false;
+            // Re-anchor when shown again so hidden time is never counted as playback.
+            playbackClock.reanchorOnNextFrame();
+            workerHandler.removeCallbacks(pumpRunnable);
+            // A single-frame stream may carry EOS on its only frame. Rewind the
+            // decoder without rendering again, so the next play can complete normally.
+            if (output.endOfStream) {
+                restartLoop();
+                playbackClock.reanchorOnNextFrame();
+            }
+        } else if (output.endOfStream) {
+            handleEndOfStream();
         }
         return true;
     }
@@ -534,6 +586,16 @@ final class VideoCodecPlayer {
                 callback.onFirstFrameRendered(this);
             }
         });
+    }
+
+    private void handleEndOfStream() {
+        if (!looping) {
+            playbackEnded = true;
+            playing = false;
+            workerHandler.removeCallbacks(pumpRunnable);
+            return;
+        }
+        restartLoop();
     }
 
     private void restartLoop() {

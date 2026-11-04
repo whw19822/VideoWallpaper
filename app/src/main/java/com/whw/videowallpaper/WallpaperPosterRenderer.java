@@ -7,7 +7,6 @@ import android.opengl.EGLContext;
 import android.opengl.EGLDisplay;
 import android.opengl.EGLSurface;
 import android.opengl.GLES20;
-import android.opengl.GLUtils;
 import android.util.Log;
 import android.view.Surface;
 
@@ -134,7 +133,7 @@ final class WallpaperPosterRenderer {
                     GLES20.GL_TEXTURE_WRAP_T,
                     GLES20.GL_CLAMP_TO_EDGE
             );
-            GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, poster, 0);
+            uploadPoster(poster);
 
             FloatBuffer vertices = ByteBuffer
                     .allocateDirect(VERTICES.length * FLOAT_BYTES)
@@ -222,6 +221,31 @@ final class WallpaperPosterRenderer {
                 EGL14.eglReleaseThread();
             }
         }
+    }
+
+    private static void uploadPoster(Bitmap poster) {
+        // GLUtils does not account for Bitmap row stride. An odd RGB565 width
+        // with GLES's default four-byte alignment can make the driver read past
+        // the allocation. Explicitly pack rows and use one-byte alignment.
+        if (poster.getConfig() != Bitmap.Config.RGB_565) {
+            throw new IllegalArgumentException("Poster must use RGB565 pixels");
+        }
+        ByteBuffer bitmapPixels = ByteBuffer.allocateDirect(poster.getByteCount())
+                .order(ByteOrder.nativeOrder());
+        poster.copyPixelsToBuffer(bitmapPixels);
+        bitmapPixels.flip();
+        ByteBuffer packedPixels = PosterPixelBuffer.pack(
+                bitmapPixels, poster.getRowBytes(), poster.getWidth(), poster.getHeight(), 2
+        );
+        GLES20.glPixelStorei(GLES20.GL_UNPACK_ALIGNMENT, 1);
+        GLES20.glTexImage2D(
+                GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGB,
+                poster.getWidth(), poster.getHeight(), 0,
+                GLES20.GL_RGB, GLES20.GL_UNSIGNED_SHORT_5_6_5, packedPixels
+        );
+        checkGl("poster texture upload");
+        Log.d(TAG, "Uploaded poster " + poster.getWidth() + "x" + poster.getHeight()
+                + " rowBytes=" + poster.getRowBytes());
     }
 
     private static EGLConfig chooseConfig(EGLDisplay display) {

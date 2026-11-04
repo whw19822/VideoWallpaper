@@ -46,6 +46,7 @@ public final class MainActivity extends Activity {
     private TextView systemModeStatus;
     private TextView displayStatus;
     private Switch swapSwitch;
+    private Switch loopSwitch;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -200,6 +201,29 @@ public final class MainActivity extends Activity {
         addWithTopMargin(mappingCard, displayStatus, 14);
         addWithTopMargin(content, mappingCard, 18);
 
+        LinearLayout playbackCard = new LinearLayout(this);
+        playbackCard.setOrientation(LinearLayout.VERTICAL);
+        playbackCard.setPadding(dp(18), dp(18), dp(18), dp(18));
+        playbackCard.setBackground(roundedBackground(color(R.color.app_surface), 22, 0, 0));
+        playbackCard.setElevation(dp(1));
+        loopSwitch = new Switch(this);
+        loopSwitch.setText("循环播放视频");
+        loopSwitch.setTextSize(16);
+        loopSwitch.setTextColor(color(R.color.app_text));
+        loopSwitch.setShowText(false);
+        loopSwitch.setChecked(VideoPreferences.isVideoLooping(this));
+        loopSwitch.setOnCheckedChangeListener((button, checked) ->
+                VideoPreferences.setVideoLooping(this, checked));
+        playbackCard.addView(loopSwitch, matchWrapParams());
+        TextView playbackHint = label(
+                "关闭后，每次壁纸重新可见时从头播放一次，播完停留在最后画面。此设置适用于所有屏幕和外观模式。",
+                13,
+                color(R.color.app_text_secondary)
+        );
+        playbackHint.setLineSpacing(0, 1.18f);
+        addWithTopMargin(playbackCard, playbackHint, 7);
+        addWithTopMargin(content, playbackCard, 18);
+
         Button applyButton = primaryButton("预览并设为动态壁纸");
         applyButton.setOnClickListener(view -> openWallpaperPreview());
         LinearLayout.LayoutParams applyParams = matchWrapParams();
@@ -208,7 +232,7 @@ public final class MainActivity extends Activity {
         content.addView(applyButton);
 
         TextView footer = label(
-                "视频将静音循环播放，并仅在壁纸可见时占用播放资源。建议选用与屏幕方向一致的短视频。",
+                "视频将静音播放，并在壁纸不可见时暂停。建议选用与屏幕方向一致的短视频。",
                 12,
                 color(R.color.app_text_secondary)
         );
@@ -464,6 +488,7 @@ public final class MainActivity extends Activity {
                 )
         );
 
+        loopSwitch.setChecked(VideoPreferences.isVideoLooping(this));
         boolean swapped = VideoPreferences.areScreenRolesSwapped(this);
         if (swapSwitch.isChecked() != swapped) {
             swapSwitch.setOnCheckedChangeListener(null);
