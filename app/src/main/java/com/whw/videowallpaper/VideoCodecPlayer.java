@@ -88,7 +88,7 @@ final class VideoCodecPlayer {
     private final Handler workerHandler;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final Callback callback;
-    private final VideoPlaybackClock playbackClock = new VideoPlaybackClock();
+    private final VideoPlaybackClock playbackClock;
     private final MediaCodec.BufferInfo outputInfo = new MediaCodec.BufferInfo();
     private final Runnable pumpRunnable = this::pump;
 
@@ -114,6 +114,7 @@ final class VideoCodecPlayer {
             Handler workerHandler,
             boolean playWhenReady,
             boolean looping,
+            double playbackSpeed,
             Callback callback
     ) {
         this.context = context.getApplicationContext();
@@ -122,6 +123,7 @@ final class VideoCodecPlayer {
         this.workerHandler = workerHandler;
         this.playing = playWhenReady;
         this.looping = looping;
+        this.playbackClock = new VideoPlaybackClock(playbackSpeed);
         this.callback = callback;
         workerHandler.post(this::initialize);
     }

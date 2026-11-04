@@ -58,4 +58,65 @@ public final class VideoPlaybackClockTest {
                 clock.targetRealtimeNs(0L, 5_000_000_000L)
         );
     }
+    @Test
+    public void supportedSpeedsScaleFrameTimingAndLoopDurationTogether() {
+        for (PlaybackSpeed speed : PlaybackSpeed.values()) {
+            VideoPlaybackClock clock = new VideoPlaybackClock(speed.multiplier);
+            long startNs = 1_000_000_000L;
+            assertEquals(startNs, clock.targetRealtimeNs(0L, startNs));
+            assertEquals(startNs + Math.round(1_000_000_000L / speed.multiplier),
+                    clock.targetRealtimeNs(1_000_000L, startNs));
+            clock.prepareNextLoop(8_000_000L, startNs);
+            assertEquals(startNs + Math.round(8_000_000_000L / speed.multiplier),
+                    clock.targetRealtimeNs(0L, startNs));
+        }
+    }
+
+    @Test
+    public void slowPlaybackResumeDoesNotIncludeHiddenTime() {
+        VideoPlaybackClock clock = new VideoPlaybackClock(0.25);
+        clock.targetRealtimeNs(0L, 1_000_000_000L);
+        clock.reanchorOnNextFrame();
+        assertEquals(20_000_000_000L,
+                clock.targetRealtimeNs(500_000L, 20_000_000_000L));
+        assertEquals(22_000_000_000L,
+                clock.targetRealtimeNs(1_000_000L, 20_000_000_000L));
+    }
+
+    @Test
+    public void fastPlaybackLateLoopDoesNotCatchUp() {
+        VideoPlaybackClock clock = new VideoPlaybackClock(2.0);
+        clock.targetRealtimeNs(0L, 1_000_000_000L);
+        clock.prepareNextLoop(8_000_000L, 7_000_000_000L);
+        assertEquals(7_000_000_000L, clock.targetRealtimeNs(0L, 7_000_000_000L));
+    }
+
+    @Test
+    public void veryLongSlowVideoDoesNotOverflow() {
+        VideoPlaybackClock clock = new VideoPlaybackClock(0.25);
+        clock.targetRealtimeNs(0L, 1L);
+        assertEquals(Long.MAX_VALUE, clock.targetRealtimeNs(Long.MAX_VALUE, 1L));
+    }
+
+    @Test(expected = IllegalArgumentException.class)
+    public void zeroSpeedIsRejected() {
+        new VideoPlaybackClock(0.0);
+    }
+
+    @Test(expected = IllegalArgumentException.class)
+    public void nanSpeedIsRejected() {
+        new VideoPlaybackClock(Double.NaN);
+    }
+
+    @Test(expected = IllegalArgumentException.class)
+    public void infiniteSpeedIsRejected() {
+        new VideoPlaybackClock(Double.POSITIVE_INFINITY);
+    }
+
+    @Test
+    public void missingOrUnknownSpeedUsesNormalPlayback() {
+        assertEquals(PlaybackSpeed.NORMAL, PlaybackSpeed.fromStoredValue(null));
+        assertEquals(PlaybackSpeed.NORMAL, PlaybackSpeed.fromStoredValue("invalid"));
+        assertEquals(PlaybackSpeed.HALF, PlaybackSpeed.fromStoredValue("HALF"));
+    }
 }

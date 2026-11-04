@@ -1,6 +1,7 @@
 package com.whw.videowallpaper;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.app.WallpaperInfo;
 import android.app.WallpaperManager;
 import android.content.ActivityNotFoundException;
@@ -47,6 +48,7 @@ public final class MainActivity extends Activity {
     private TextView displayStatus;
     private Switch swapSwitch;
     private Switch loopSwitch;
+    private Button playbackSpeedButton;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -222,6 +224,16 @@ public final class MainActivity extends Activity {
         );
         playbackHint.setLineSpacing(0, 1.18f);
         addWithTopMargin(playbackCard, playbackHint, 7);
+        playbackSpeedButton = secondaryButton("");
+        refreshPlaybackSpeedLabel();
+        playbackSpeedButton.setOnClickListener(view -> showPlaybackSpeedPicker());
+        addWithTopMargin(playbackCard, playbackSpeedButton, 18);
+        TextView speedHint = label(
+                "倍速适用于所有屏幕和外观模式，修改后从头播放生效。",
+                13,
+                color(R.color.app_text_secondary)
+        );
+        addWithTopMargin(playbackCard, speedHint, 7);
         addWithTopMargin(content, playbackCard, 18);
 
         Button applyButton = primaryButton("预览并设为动态壁纸");
@@ -241,6 +253,29 @@ public final class MainActivity extends Activity {
         addWithTopMargin(content, footer, 14);
 
         return scrollView;
+    }
+
+    private void refreshPlaybackSpeedLabel() {
+        playbackSpeedButton.setText("播放倍速：" + VideoPreferences.getPlaybackSpeed(this).label);
+    }
+
+    private void showPlaybackSpeedPicker() {
+        PlaybackSpeed[] speeds = PlaybackSpeed.values();
+        String[] labels = new String[speeds.length];
+        for (int index = 0; index < speeds.length; index++) {
+            labels[index] = speeds[index].label
+                    + (speeds[index] == PlaybackSpeed.NORMAL ? "（正常速度）" : "");
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("播放倍速")
+                .setSingleChoiceItems(labels, VideoPreferences.getPlaybackSpeed(this).ordinal(),
+                        (dialog, which) -> {
+                            VideoPreferences.setPlaybackSpeed(this, speeds[which]);
+                            refreshPlaybackSpeedLabel();
+                            dialog.dismiss();
+                        })
+                .setNegativeButton("取消", null)
+                .show();
     }
 
     private View createVideoCard(ScreenRole role) {
@@ -489,6 +524,7 @@ public final class MainActivity extends Activity {
         );
 
         loopSwitch.setChecked(VideoPreferences.isVideoLooping(this));
+        refreshPlaybackSpeedLabel();
         boolean swapped = VideoPreferences.areScreenRolesSwapped(this);
         if (swapSwitch.isChecked() != swapped) {
             swapSwitch.setOnCheckedChangeListener(null);

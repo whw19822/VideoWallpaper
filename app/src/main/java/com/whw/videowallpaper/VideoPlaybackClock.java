@@ -7,9 +7,22 @@ package com.whw.videowallpaper;
 final class VideoPlaybackClock {
     private static final long UNSET = Long.MIN_VALUE;
 
+    private final double playbackSpeed;
+
     private long anchorMediaTimeUs = UNSET;
     private long anchorRealtimeNs = UNSET;
     private long nextLoopRealtimeNs = UNSET;
+
+    VideoPlaybackClock() {
+        this(1.0);
+    }
+
+    VideoPlaybackClock(double playbackSpeed) {
+        if (!Double.isFinite(playbackSpeed) || playbackSpeed <= 0.0) {
+            throw new IllegalArgumentException("Playback speed must be finite and positive");
+        }
+        this.playbackSpeed = playbackSpeed;
+    }
 
     long targetRealtimeNs(long presentationTimeUs, long nowNs) {
         if (anchorMediaTimeUs == UNSET) {
@@ -21,12 +34,12 @@ final class VideoPlaybackClock {
         }
 
         long deltaUs = Math.max(0L, presentationTimeUs - anchorMediaTimeUs);
-        return saturatedAdd(anchorRealtimeNs, saturatedMultiplyByOneThousand(deltaUs));
+        return saturatedAdd(anchorRealtimeNs, scaledDurationNs(deltaUs));
     }
 
     void prepareNextLoop(long durationUs, long nowNs) {
         if (anchorMediaTimeUs != UNSET && durationUs > anchorMediaTimeUs) {
-            long loopDurationNs = saturatedMultiplyByOneThousand(
+            long loopDurationNs = scaledDurationNs(
                     durationUs - anchorMediaTimeUs
             );
             nextLoopRealtimeNs = Math.max(
@@ -46,11 +59,9 @@ final class VideoPlaybackClock {
         nextLoopRealtimeNs = UNSET;
     }
 
-    private static long saturatedMultiplyByOneThousand(long value) {
-        if (value > Long.MAX_VALUE / 1_000L) {
-            return Long.MAX_VALUE;
-        }
-        return value * 1_000L;
+    private long scaledDurationNs(long durationUs) {
+        double durationNs = durationUs * (1_000.0 / playbackSpeed);
+        return durationNs >= Long.MAX_VALUE ? Long.MAX_VALUE : Math.round(durationNs);
     }
 
     private static long saturatedAdd(long left, long right) {

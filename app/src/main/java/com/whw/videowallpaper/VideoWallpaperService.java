@@ -229,7 +229,8 @@ public final class VideoWallpaperService extends WallpaperService {
         public void onSharedPreferenceChanged(SharedPreferences preferences, String key) {
             if (!VideoPreferences.isVideoUriKey(key)
                     && !VideoPreferences.KEY_SWAP_SCREENS.equals(key)
-                    && !VideoPreferences.KEY_LOOP_VIDEO.equals(key)) {
+                    && !VideoPreferences.KEY_LOOP_VIDEO.equals(key)
+                    && !VideoPreferences.KEY_PLAYBACK_SPEED.equals(key)) {
                 return;
             }
             if (visible) {
@@ -293,6 +294,7 @@ public final class VideoWallpaperService extends WallpaperService {
                     activePlaybackHandler,
                     visible,
                     VideoPreferences.isVideoLooping(displayContext),
+                    VideoPreferences.getPlaybackSpeed(displayContext).multiplier,
                     new VideoCodecPlayer.Callback() {
                         @Override
                         public void onFirstFrameRendered(VideoCodecPlayer player) {
